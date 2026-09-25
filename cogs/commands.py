@@ -37,8 +37,11 @@ class VoiceCommands(commands.Cog):
         if not await self.is_owner(ctx):
             return await ctx.send("❌ You do not own this voice channel.")
         if target.voice and target.voice.channel == ctx.author.voice.channel:
-            await target.move_to(None)
-            await ctx.send(f"👢 Kicked {target.mention} from the channel.")
+            try:
+                await target.move_to(None)
+                await ctx.send(f"👢 Kicked {target.mention} from the channel.")
+            except discord.HTTPException:
+                await ctx.send(f"⚠️ {target.mention} already left the channel.")
 
     @vc.command(name="ban")
     async def ban(self, ctx, target: discord.Member):
@@ -47,7 +50,10 @@ class VoiceCommands(commands.Cog):
         ch = ctx.author.voice.channel
         await ch.set_permissions(target, connect=False, view_channel=False)
         if target.voice and target.voice.channel == ch:
-            await target.move_to(None)
+            try:
+                await target.move_to(None)
+            except discord.HTTPException:
+                pass # User already left
         await ctx.send(f"🚫 Banned {target.mention} from the channel.")
 
     @vc.command(name="unban")
@@ -58,11 +64,21 @@ class VoiceCommands(commands.Cog):
         await ctx.send(f"🔓 Unbanned {target.mention}.")
 
     @vc.command(name="rename")
+    @commands.cooldown(2, 600, commands.BucketType.channel) # 2 uses per 600 seconds (10 mins)
     async def rename(self, ctx, *, name: str):
         if not await self.is_owner(ctx):
             return await ctx.send("❌ You do not own this voice channel.")
-        await ctx.author.voice.channel.edit(name=name[:32])
-        await ctx.send(f"✏️ Renamed channel to **{name[:32]}**.")
+        try:
+            await ctx.author.voice.channel.edit(name=name[:32])
+            await ctx.send(f"✏️ Renamed channel to **{name[:32]}**.")
+        except discord.HTTPException as e:
+            await ctx.send(f"❌ Failed to rename channel. Discord API Error: {e}")
+
+    @rename.error
+    async def rename_error(self, ctx, error):
+        if isinstance(error, commands.CommandOnCooldown):
+            minutes, seconds = divmod(error.retry_after, 60)
+            await ctx.send(f"⏳ Discord limits channel renaming. Try again in {int(minutes)}m {int(seconds)}s.")
 
     @commands.command(name="help")
     async def help_cmd(self, ctx):

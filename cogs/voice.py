@@ -81,9 +81,8 @@ class VoiceEvents(commands.Cog):
     @tasks.loop(minutes=10)
     async def ghost_sweeper(self):
         try:
-            async with aiosqlite.connect(db.db_path) as connection:
-                async with connection.execute("SELECT channel_id FROM voice_channels") as cursor:
-                    rows = await cursor.fetchall()
+            # Replaced raw aiosqlite connection with our new helper method
+            rows = await db.get_all_channels()
                     
             for row in rows:
                 channel_id = row[0]
@@ -138,36 +137,49 @@ class VoiceEvents(commands.Cog):
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        if after.channel:
-            type_name, limit = self.parse_template(after.channel.name)
-            if type_name and member.id not in self.active_creations:
-                self.active_creations.add(member.id)
-                try:
-                    async with self.get_lock(member.guild.id):
-                        if member.voice and member.voice.channel == after.channel:
-                            overwrites = {
-                                member.guild.default_role: discord.PermissionOverwrite(connect=True),
-                                member: discord.PermissionOverwrite(manage_channels=True, move_members=True, connect=True)
-                            }
-                            new_channel = await member.guild.create_voice_channel(
-                                name=f"{type_name} | {member.display_name}",
-                                category=after.channel.category,
-                                user_limit=limit,
-                                overwrites=overwrites
-                            )
-                            await member.move_to(new_channel)
-                            await db.add_channel(new_channel.id, member.id)
+        # Ignore simple mute/deafen updates
+        if before.channel == after.channel:
+            return
 
-                            embed = discord.Embed(
-                                title="🎙️ Voice Control Panel",
-                                description="Manage your channel using the buttons below or commands (`.vc permit`, `.vc kick`, `.vc ban`, `.vc rename`).",
-                                color=discord.Color.blurple()
+        if after.channel:
+            # THE FIX: Check if they are joining an ALREADY generated temporary channel
+            is_generated_vc = await db.get_owner(after.channel.id)
+            
+            # If it's NOT a generated VC, then we check if we need to create one
+            if not is_generated_vc:
+                type_name, limit = self.parse_template(after.channel.name)
+                if type_name and member.id not in self.active_creations:
+                    self.active_creations.add(member.id)
+                    try:
+                        async with self.get_lock(member.guild.id):
+                            if member.voice and member.voice.channel == after.channel:
+                                overwrites = {
+                                    member.guild.default_role: discord.PermissionOverwrite(connect=True),
+                                    member: discord.PermissionOverwrite(manage_channels=True, move_members=True, connect=True)
+                                }
+                                new_channel = await member.guild.create_voice_channel(
+                                    name=f"{type_name} | {member.display_name}",
+                                    category=after.channel.category,
+                                    user_limit=limit,
+                                    overwrites=overwrites
                             )
-                            await new_channel.send(embed=embed, view=VoiceControlView(self.bot))
-                except Exception as e:
-                    print(f"Error creating channel: {e}")
-                finally:
-                    self.active_creations.discard(member.id)
+                            try:
+                                await member.move_to(new_channel)
+                                await db.add_channel(new_channel.id, member.id)
+
+                                embed = discord.Embed(
+                                    title="🎙️ Voice Control Panel",
+                                    description="Manage your channel using the buttons below or commands (`.vc permit`, `.vc kick`, `.vc ban`, `.vc rename`).",
+                                    color=discord.Color.blurple()
+                                )
+                                await new_channel.send(embed=embed, view=VoiceControlView(self.bot))
+                            except discord.HTTPException:
+                                # The user disconnected before we could move them. Nuke the channel instantly.
+                                await new_channel.delete(reason="User left during channel creation phase.")
+                    except Exception as e:
+                        print(f"Error creating channel: {e}")
+                    finally:
+                        self.active_creations.discard(member.id)
 
         if before.channel:
             owner_id = await db.get_owner(before.channel.id)
