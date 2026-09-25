@@ -18,13 +18,7 @@ class Bot(commands.Bot):
         await self.load_extension("cogs.voice")
         await self.load_extension("cogs.commands")
         print("Cogs loaded and database initialized.")
-    @commands.command(name="reload", hidden=True)
-    @commands.is_owner()
-    async def reload_cogs(self, ctx):
-        await self.reload_extension("cogs.voice")
-        await self.reload_extension("cogs.commands")
-        await ctx.send("✅ Cogs successfully hot-reloaded! New code is active.")
-        
+
 bot = Bot()
 
 if __name__ == "__main__":

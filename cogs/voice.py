@@ -1,7 +1,8 @@
 import asyncio
 import unicodedata
 import discord
-from discord.ext import commands
+import aiosqlite
+from discord.ext import commands, tasks
 from database import db
 
 class VoiceControlView(discord.ui.View):
@@ -26,7 +27,7 @@ class VoiceControlView(discord.ui.View):
         overwrites = channel.overwrites_for(interaction.guild.default_role)
         overwrites.connect = False
         await channel.set_permissions(interaction.guild.default_role, overwrite=overwrites)
-        await interaction.response.send_message("🔒 Channel locked.", ephemeral=True)
+        await interaction.response.send_message("🔒 Channel locked. Use `.vc permit @user` to let friends in.", ephemeral=True)
 
     @discord.ui.button(label="Unlock", style=discord.ButtonStyle.green, custom_id="vc_unlock", emoji="🔓")
     async def unlock(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -58,6 +59,10 @@ class VoiceEvents(commands.Cog):
         self.bot = bot
         self.active_creations = set()
         self.locks = {}
+        self.ghost_sweeper.start()
+
+    def cog_unload(self):
+        self.ghost_sweeper.cancel()
 
     def get_lock(self, guild_id: int) -> asyncio.Lock:
         if guild_id not in self.locks:
@@ -66,21 +71,73 @@ class VoiceEvents(commands.Cog):
 
     def parse_template(self, channel_name: str):
         normalized = unicodedata.normalize('NFKD', channel_name).lower()
-        if "duo" in normalized:
-            return "Duo", 2
-        elif "trio" in normalized:
-            return "Trio", 3
-        elif "squad" in normalized or "quad" in normalized:
-            return "Squad", 4
-        elif "team" in normalized:
-            return "Team", 10
-        elif any(symbol in channel_name for symbol in ["➕", "✚", "[+]", "♡"]):
-            return "General", 0
+        if "duo" in normalized: return "Duo", 2
+        elif "trio" in normalized: return "Trio", 3
+        elif "squad" in normalized or "quad" in normalized: return "Squad", 4
+        elif "team" in normalized: return "Team", 10
+        elif any(symbol in channel_name for symbol in ["➕", "✚", "[+]", "♡"]): return "General", 0
         return None, 0
+
+    @tasks.loop(minutes=10)
+    async def ghost_sweeper(self):
+        try:
+            async with aiosqlite.connect(db.db_path) as connection:
+                async with connection.execute("SELECT channel_id FROM voice_channels") as cursor:
+                    rows = await cursor.fetchall()
+                    
+            for row in rows:
+                channel_id = row[0]
+                channel = self.bot.get_channel(channel_id)
+                if channel is None:
+                    try:
+                        channel = await self.bot.fetch_channel(channel_id)
+                    except discord.NotFound:
+                        await db.remove_channel(channel_id)
+                        continue
+                    except: continue
+
+                if len(channel.members) == 0:
+                    try:
+                        await channel.delete(reason="Ghost sweeper cleanup")
+                    except: pass
+                    finally:
+                        await db.remove_channel(channel_id)
+        except Exception as e:
+            print(f"Sweeper error: {e}")
+
+    @ghost_sweeper.before_loop
+    async def before_sweeper(self):
+        await self.bot.wait_until_ready()
+
+    async def handle_auto_transfer(self, channel_id: int, old_owner_id: int):
+        await asyncio.sleep(300) 
+        
+        # Re-fetch the channel safely after the wait
+        channel = self.bot.get_channel(channel_id)
+        if not channel: return
+
+        current_owner = await db.get_owner(channel.id)
+        if not current_owner or current_owner != old_owner_id:
+            return 
+            
+        if any(m.id == old_owner_id for m in channel.members):
+            return
+            
+        # Only transfer to actual users, not bots
+        eligible_members = [m for m in channel.members if not m.bot]
+        if not eligible_members:
+            return 
+            
+        new_owner = eligible_members[0]
+        await db.update_owner(channel.id, new_owner.id)
+        await channel.set_permissions(new_owner, manage_channels=True, move_members=True, connect=True)
+        
+        try:
+            await channel.send(f"👑 {new_owner.mention}, the previous owner left 5 minutes ago. You are the new channel owner!")
+        except: pass
 
     @commands.Cog.listener()
     async def on_voice_state_update(self, member, before, after):
-        # Handle Channel Creation
         if after.channel:
             type_name, limit = self.parse_template(after.channel.name)
             if type_name and member.id not in self.active_creations:
@@ -103,7 +160,7 @@ class VoiceEvents(commands.Cog):
 
                             embed = discord.Embed(
                                 title="🎙️ Voice Control Panel",
-                                description="Manage your channel using the buttons below or commands (`.vc kick`, `.vc ban`, `.vc rename`).",
+                                description="Manage your channel using the buttons below or commands (`.vc permit`, `.vc kick`, `.vc ban`, `.vc rename`).",
                                 color=discord.Color.blurple()
                             )
                             await new_channel.send(embed=embed, view=VoiceControlView(self.bot))
@@ -112,17 +169,20 @@ class VoiceEvents(commands.Cog):
                 finally:
                     self.active_creations.discard(member.id)
 
-        # Handle Channel Deletion
         if before.channel:
             owner_id = await db.get_owner(before.channel.id)
-            if owner_id and len(before.channel.members) == 0:
-                async with self.get_lock(member.guild.id):
-                    if len(before.channel.members) == 0:
-                        try:
-                            await before.channel.delete()
-                        except (discord.NotFound, discord.Forbidden):
-                            pass
-                        await db.remove_channel(before.channel.id)
+            if owner_id:
+                if len(before.channel.members) == 0:
+                    async with self.get_lock(member.guild.id):
+                        if len(before.channel.members) == 0:
+                            try:
+                                await before.channel.delete()
+                            except (discord.NotFound, discord.Forbidden):
+                                pass
+                            await db.remove_channel(before.channel.id)
+                
+                elif owner_id == member.id:
+                    self.bot.loop.create_task(self.handle_auto_transfer(before.channel.id, owner_id))
 
 async def setup(bot):
     await bot.add_cog(VoiceEvents(bot))
