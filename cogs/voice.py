@@ -85,28 +85,32 @@ class VoiceEvents(commands.Cog):
             type_name, limit = self.parse_template(after.channel.name)
             if type_name and member.id not in self.active_creations:
                 self.active_creations.add(member.id)
-                async with self.get_lock(member.guild.id):
-                    if member.voice and member.voice.channel == after.channel:
-                        overwrites = {
-                            member.guild.default_role: discord.PermissionOverwrite(connect=True),
-                            member: discord.PermissionOverwrite(manage_channels=True, move_members=True, connect=True)
-                        }
-                        new_channel = await member.guild.create_voice_channel(
-                            name=f"{type_name} | {member.display_name}",
-                            category=after.channel.category,
-                            user_limit=limit,
-                            overwrites=overwrites
-                        )
-                        await member.move_to(new_channel)
-                        await db.add_channel(new_channel.id, member.id)
+                try:
+                    async with self.get_lock(member.guild.id):
+                        if member.voice and member.voice.channel == after.channel:
+                            overwrites = {
+                                member.guild.default_role: discord.PermissionOverwrite(connect=True),
+                                member: discord.PermissionOverwrite(manage_channels=True, move_members=True, connect=True)
+                            }
+                            new_channel = await member.guild.create_voice_channel(
+                                name=f"{type_name} | {member.display_name}",
+                                category=after.channel.category,
+                                user_limit=limit,
+                                overwrites=overwrites
+                            )
+                            await member.move_to(new_channel)
+                            await db.add_channel(new_channel.id, member.id)
 
-                        embed = discord.Embed(
-                            title="🎙️ Voice Control Panel",
-                            description="Manage your channel using the buttons below or commands (`.vc kick`, `.vc ban`, `.vc rename`).",
-                            color=discord.Color.blurple()
-                        )
-                        await new_channel.send(embed=embed, view=VoiceControlView(self.bot))
-                self.active_creations.discard(member.id)
+                            embed = discord.Embed(
+                                title="🎙️ Voice Control Panel",
+                                description="Manage your channel using the buttons below or commands (`.vc kick`, `.vc ban`, `.vc rename`).",
+                                color=discord.Color.blurple()
+                            )
+                            await new_channel.send(embed=embed, view=VoiceControlView(self.bot))
+                except Exception as e:
+                    print(f"Error creating channel: {e}")
+                finally:
+                    self.active_creations.discard(member.id)
 
         # Handle Channel Deletion
         if before.channel:
