@@ -64,6 +64,42 @@ class VoiceCommands(commands.Cog):
         await ctx.author.voice.channel.edit(name=name[:32])
         await ctx.send(f"✏️ Renamed channel to **{name[:32]}**.")
 
+    @commands.command(name="help")
+    async def help_cmd(self, ctx):
+        embed = discord.Embed(
+            title="🎙️ Voice Bot Help Menu",
+            description="Here are the commands you can use with this bot.",
+            color=discord.Color.blurple()
+        )
+        
+        # Standard User Commands
+        vc_cmds = (
+            "`.vc permit @user` — Allow a user into a locked channel\n"
+            "`.vc kick @user` — Disconnect a user from your channel\n"
+            "`.vc ban @user` — Ban a user from rejoining your channel\n"
+            "`.vc unban @user` — Unban a user\n"
+            "`.vc rename <name>` — Rename your channel (max 32 chars)"
+        )
+        embed.add_field(name="👥 Channel Owner Commands", value=vc_cmds, inline=False)
+        
+        # Admin / Sub-Admin Dynamic Checks
+        is_admin = False
+        is_true_owner = await self.bot.is_owner(ctx.author)
+        
+        if is_true_owner:
+            is_admin = True
+        else:
+            is_admin = await db.is_admin(ctx.author.id)
+            
+        if is_admin:
+            admin_cmds = "`.reload` — Hot-reload the bot's code without restarting\n"
+            if is_true_owner:
+                admin_cmds += "`.admin add @user` — Grant a user sub-admin privileges\n"
+                admin_cmds += "`.admin remove @user` — Revoke sub-admin privileges\n"
+            
+            embed.add_field(name="🛡️ Admin Commands", value=admin_cmds, inline=False)
+            
+        await ctx.send(embed=embed)
 
 class AdminCommands(commands.Cog):
     def __init__(self, bot):
