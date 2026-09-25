@@ -2,6 +2,14 @@ import discord
 from discord.ext import commands
 from database import db
 
+# Custom check for sub-admins or the true bot owner
+async def is_admin_or_owner(ctx):
+    if await ctx.bot.is_owner(ctx.author):
+        return True
+    if await db.is_admin(ctx.author.id):
+        return True
+    raise commands.CheckFailure("❌ You do not have bot admin permissions.")
+
 class VoiceCommands(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -56,12 +64,55 @@ class VoiceCommands(commands.Cog):
         await ctx.author.voice.channel.edit(name=name[:32])
         await ctx.send(f"✏️ Renamed channel to **{name[:32]}**.")
 
+
+class AdminCommands(commands.Cog):
+    def __init__(self, bot):
+        self.bot = bot
+
+    @commands.group(name="admin", invoke_without_command=True)
+    @commands.check(is_admin_or_owner)
+    async def admin_group(self, ctx):
+        await ctx.send("⚙️ Type `.admin help` for a list of admin commands.")
+
+    @admin_group.command(name="help")
+    @commands.check(is_admin_or_owner)
+    async def admin_help(self, ctx):
+        embed = discord.Embed(
+            title="🛡️ Bot Admin Panel",
+            description="Commands for managing the bot and its sub-admins.",
+            color=discord.Color.red()
+        )
+        embed.add_field(name=".reload", value="Hot-reloads the bot code without restarting it. (Usable by Owner & Sub-Admins)", inline=False)
+        embed.add_field(name=".admin add @user", value="Grants sub-admin privileges to a user. (Owner Only)", inline=False)
+        embed.add_field(name=".admin remove @user", value="Revokes sub-admin privileges from a user. (Owner Only)", inline=False)
+        await ctx.send(embed=embed)
+
+    @admin_group.command(name="add")
+    @commands.is_owner() # ONLY the true Discord Application owner can use this
+    async def admin_add(self, ctx, target: discord.Member):
+        await db.add_admin(target.id)
+        await ctx.send(f"✅ {target.mention} has been added as a Sub-Admin.")
+
+    @admin_group.command(name="remove")
+    @commands.is_owner() # ONLY the true Discord Application owner can use this
+    async def admin_remove(self, ctx, target: discord.Member):
+        await db.remove_admin(target.id)
+        await ctx.send(f"❌ {target.mention} has been removed from Sub-Admins.")
+
     @commands.command(name="reload", hidden=True)
-    @commands.is_owner()
+    @commands.check(is_admin_or_owner) # Sub-admins and Owner can reload
     async def reload_cogs(self, ctx):
         await self.bot.reload_extension("cogs.voice")
         await self.bot.reload_extension("cogs.commands")
         await ctx.send("✅ Cogs successfully hot-reloaded! New code is active.")
 
+    @reload_cogs.error
+    @admin_group.error
+    async def admin_error(self, ctx, error):
+        if isinstance(error, commands.CheckFailure):
+            await ctx.send(str(error))
+
+
 async def setup(bot):
     await bot.add_cog(VoiceCommands(bot))
+    await bot.add_cog(AdminCommands(bot))
