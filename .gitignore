@@ -1,0 +1,4 @@
+.env
+voice_system.db
+__pycache__/
+venv/
